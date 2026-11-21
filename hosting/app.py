@@ -6,8 +6,8 @@ import json
 from typing import Annotated, Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from model_inference import AccidentSeverityModel, ModelContractError
@@ -121,10 +121,14 @@ app = FastAPI(
         "Predicts accident severity from 1 (least severe) to 4 (most severe)."
     ),
     version="1.0.0",
+    docs_url="/docs",
+    openapi_url="/openapi.json",
 )
 
+router = APIRouter()
 
-@app.get("/", response_class=HTMLResponse, tags=["ui"])
+
+@router.get("/", response_class=HTMLResponse, tags=["ui"])
 def root_ui():
     """Interactive HTML web tester for browser testing on Vercel."""
     html_content = """<!DOCTYPE html>
@@ -397,8 +401,9 @@ def root_ui():
       resBox.style.display = 'block';
       badgeBox.innerHTML = 'Computing...';
 
+      const predictUrl = window.location.pathname.startsWith('/api') ? '/api/predict' : '/predict';
       try {
-        const response = await fetch('/predict', {
+        const response = await fetch(predictUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -424,7 +429,7 @@ def root_ui():
     return HTMLResponse(content=html_content)
 
 
-@app.get("/health", tags=["system"])
+@router.get("/health", tags=["system"])
 def health() -> dict[str, Any]:
     model = get_model()
     return {
@@ -434,12 +439,12 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.get("/model/info", tags=["model"])
+@router.get("/model/info", tags=["model"])
 def model_info() -> dict[str, Any]:
     return get_model().model_info()
 
 
-@app.post("/predict", response_model=PredictionResult, tags=["prediction"])
+@router.post("/predict", response_model=PredictionResult, tags=["prediction"])
 def predict(record: AccidentRecord) -> dict[str, Any]:
     try:
         raw_record = record.model_dump(by_alias=True)
@@ -448,7 +453,7 @@ def predict(record: AccidentRecord) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post(
+@router.post(
     "/predict/batch", response_model=BatchPredictionResponse, tags=["prediction"]
 )
 def predict_batch(payload: BatchPredictionRequest) -> dict[str, Any]:
@@ -458,3 +463,20 @@ def predict_batch(payload: BatchPredictionRequest) -> dict[str, Any]:
         return {"count": len(predictions), "predictions": predictions}
     except (ValueError, ModelContractError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# Include routes at root (/)
+app.include_router(router)
+
+# Also include routes under (/api) so both work seamlessly on Vercel
+app.include_router(router, prefix="/api")
+
+
+@app.get("/api/docs", include_in_schema=False)
+def api_docs_redirect():
+    return RedirectResponse(url="/docs")
+
+
+@app.get("/api/openapi.json", include_in_schema=False)
+def api_openapi():
+    return app.openapi()
